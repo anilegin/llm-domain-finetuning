@@ -14,7 +14,7 @@ OUTPUTS_DIR = Path("outputs")
 
 # Course-provided token for the dataset; override via HF_TOKEN env variable.
 HF_TOKEN: str = os.environ.get(
-    "HF_TOKEN_DATASET"
+    "HF_TOKEN"
 )
 
 SYSTEM_PROMPT = (
