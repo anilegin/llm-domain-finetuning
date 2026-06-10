@@ -69,6 +69,10 @@ def main() -> None:
     path = snapshot_download(repo_id=bert_model_id, token=token)
     print(f"  cached at: {path}\n")
 
+    # ───── 6. nltk ───────────────────────────────────────────────────
+    import nltk
+    nltk.download('wordnet')
+
     print("All assets cached. You can now submit the SLURM job.")
 
 

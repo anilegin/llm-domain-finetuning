@@ -18,7 +18,7 @@ for _name, _path in _NLTK_RESOURCES:
         nltk.data.find(_path)
     except LookupError:
         raise RuntimeError(
-            f"NLTK resource '{_name}' not found. Run `python prefetch.py` on the login node first."
+            f"NLTK resource '{_name}' not found. Run `python download_datasets.py` on the login node first."
         )
 
 # BERTScorer is expensive to initialise. Use get_bert_scorer() so it is only

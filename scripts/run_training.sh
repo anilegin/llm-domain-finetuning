@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # ==================== Directories ====================
-PROJECT_DIR="$HOME/llm-domain-finetuning"
+PROJECT_DIR="$HOME/projects/llm-domain-finetuning"
 cd "$PROJECT_DIR"
 
 mkdir -p logs models outputs
@@ -67,7 +67,7 @@ export TOKENIZERS_PARALLELISM=false
 # ==================== Debug info ====================
 echo "============================================="
 echo "Job started at: $(date)"
-echo "Running on node: $SLURM_NODENAME"
+echo "Running on node: ${SLURM_NODENAME:-not set}"
 echo "Working directory: $(pwd)"
 echo "GPU info:"
 nvidia-smi
