@@ -401,27 +401,7 @@ def evaluate_responses(results: list) -> dict:
     return final
 
 
-def _build_judge_prompt(question: str, prediction: str) -> str:
-    """
-    # This is the old prompt, made it few-shot since the judge model would rarely respond as instructed
-     "You are a strict answer-evaluation judge.\n\n"
-        "## Task\n"
-        "Given a question, the correct short answer, and a model-generated answer, "
-        "decide whether the generated answer contains the correct short answer in "
-        "any valid form.\n\n"
-        "## Scoring criterion\n"
-        "  • Return **1** if the correct short answer is present in ANY valid form "
-        "(e.g. 'twenty-four' instead of '24', or 'Rome was founded in 753 BCE' "
-        "instead of '753 BCE').\n"
-        "  • Return **0** if the correct short answer is NOT present in any valid "
-        "form (e.g. 'It was located in Rome' instead of the correct answer 'Milan').\n\n"
-        "## Input\n"
-        f"Question: {question}\n"
-        f"Correct short answer: {ground_truth}\n"
-        f"Generated answer: {prediction}\n\n"
-        "## Output\n"
-        "Reply with a single integer — either 0 or 1 — and nothing else."
-        """
+def _build_judge_prompt(question: str, ground_truth: str, prediction: str) -> str:
     return (
         "You are a strict answer-evaluation judge.\n\n"
         "## Task\n"
@@ -429,42 +409,33 @@ def _build_judge_prompt(question: str, prediction: str) -> str:
         "decide whether the generated answer contains the correct short answer in "
         "any valid form.\n\n"
         "## Scoring criterion\n"
-        "  • Return **1** if the correct short answer is present in ANY valid form "
-        "(e.g. 'twenty-four' instead of '24', or 'Rome was founded in 753 BCE' "
-        "instead of '753 BCE').\n"
-        "  • Return **0** if the correct short answer is NOT present in any valid "
-        "form (e.g. 'It was located in Rome' instead of the correct answer 'Milan').\n\n"
+        "Return 1 if the generated answer contains the correct short answer or an equivalent form.\n"
+        "Return 0 if the generated answer does not contain the correct answer, contradicts it, "
+        "or gives a different answer.\n\n"
         "## Examples\n\n"
-        "### Example 1\n"
         "Question: When was Rome founded?\n"
         "Correct short answer: 753 BCE\n"
         "Generated answer: Legend says Rome was founded in 753 BCE by Romulus.\n"
-        "Output:\n"
-        "1\n\n"
-        "### Example 2\n"
+        "Output: 1\n\n"
         "Question: Who wrote Romeo and Juliet?\n"
         "Correct short answer: William Shakespeare\n"
         "Generated answer: The play was written by Shakespeare in the late 16th century.\n"
-        "Output:\n"
-        "1\n\n"
-        "### Example 3\n"
+        "Output: 1\n\n"
         "Question: What is the capital of France?\n"
         "Correct short answer: Paris\n"
         "Generated answer: The capital city of France is Lyon.\n"
-        "Output:\n"
-        "0\n\n"
-        "### Example 4\n"
+        "Output: 0\n\n"
         "Question: How many planets are in the solar system?\n"
         "Correct short answer: eight\n"
         "Generated answer: There are 8 planets revolving around the Sun.\n"
-        "Output:\n"
-        "1\n\n"
+        "Output: 1\n\n"
         "## Input\n"
         f"Question: {question}\n"
+        f"Correct short answer: {ground_truth}\n"
         f"Generated answer: {prediction}\n\n"
         "## Output\n"
-        "Reply with a single integer — either 0 or 1 — and nothing else.\n\n"
-        "Output:\n"
+        "Reply with a single integer only: 0 or 1.\n"
+        "Output:"
     )
 
 
@@ -513,6 +484,7 @@ def compute_llm_judge(
         for item in batch_items:
             prompt = _build_judge_prompt(
                 question=item["query"],
+                ground_truth=item["ground_truth"],
                 prediction=item["RAG"],
             )
             batch_prompts.append(prompt)
@@ -891,102 +863,76 @@ def compare_models(
 
 def evaluate_from_responses(
     responses_path: str | Path,
-    llm_judge_dir: str | Path | None,
+    llm_judge_dir: str | Path | None = None,
+    additional_judge_models: list[str] | None = None,
     num_samples: int = 200,
     seed: int = 42,
 ):
     """
     Recompute metrics from a previously saved comparison.json without
-    regenerating any model responses.  Useful for debugging metrics
+    regenerating any model responses. Optionally run multiple LLMs as judges.
     """
     responses_path = Path(responses_path)
     with open(responses_path) as f:
         data = json.load(f)
     base_raw = data["base_raw"]
     ft_raw   = data["fine_tuned_raw"]
-    additional_models = data.get("additional_models")
-    additional_model_raw = data.get("additional_model_raw", {})
 
     print(f"\nLoaded {len(base_raw)} base responses and {len(ft_raw)} fine-tuned responses from {responses_path}")
 
+    # --- classic metrics ---
     print("\nBase model scores:")
     base_results = evaluate_responses(base_raw)
     print("\nFine-tuned model scores:")
     ft_results = evaluate_responses(ft_raw)
 
+    # --- additional models metrics (if any) ---
     additional_model_results = {}
-    if additional_models:
-        for model in additional_models:
-            print(f"\nAdditional model: {model} scores:")
-            additional_model_results[model] = evaluate_responses(additional_model_raw[model])
+    if additional_judge_models:
+        additional_model_raw = data.get("additional_model_raw", {})
+        for model_name in additional_judge_models:
+            if model_name in additional_model_raw:
+                print(f"\nAdditional model: {model_name} scores:")
+                additional_model_results[model_name] = evaluate_responses(additional_model_raw[model_name])
 
-    run_dir = responses_path.parent / f"reeval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-
+    # --- LLM-as-a-judge ---
     if llm_judge_dir:
-        base_judge_path = Path(llm_judge_dir) / "base.jsonl"
-        ft_judge_path = Path(llm_judge_dir) / "fine_tuned.jsonl"
-        additional_model_judge_paths = {model: Path(llm_judge_dir) / f"{Path(model).name}.jsonl" for model in additional_models} if additional_models else {}
-        
-        
+        llm_judge_dir = Path(llm_judge_dir)
+        base_judge_path = llm_judge_dir / "base.jsonl"
+        ft_judge_path   = llm_judge_dir / "fine_tuned.jsonl"
+        additional_judge_paths = {
+            m: llm_judge_dir / f"{Path(m).name}.jsonl" for m in additional_judge_models
+        } if additional_judge_models else {}
+
+        # Evaluate previously saved judge outputs
         base_judge = evaluate_llm_judge(base_judge_path)
         ft_judge   = evaluate_llm_judge(ft_judge_path)
-        base_results.update({f"judge_{key}": v for key, v in base_judge.items()})
-        ft_results.update({f"judge_{key}": v for key, v in ft_judge.items()})
-        
-        additional_model_judge = {}
-        if additional_models:
-            for model in additional_models:
-                additional_model_judge[model] = evaluate_llm_judge(additional_model_judge_paths[model])
-                _tprint(f"  Score: {additional_model_judge[model]['LLM_Judge_Score']:.4f}  (n={additional_model_judge[model]['LLM_Judge_N']})")
-                additional_model_results[model].update({f"judge_{key}": v for key, v in additional_model_judge[model].items()})
+        base_results.update({f"judge_{k}": v for k, v in base_judge.items()})
+        ft_results.update({f"judge_{k}": v for k, v in ft_judge.items()})
 
-    METRICS  = ["EM", "SubEM", "METEOR", "BERT_F1"]
-    if llm_judge_dir:
-        METRICS.append("LLM_Judge_Score")
-    VARIANTS = ["baseline", "RAG", "oracle"]
-    col_w = 12
+        if additional_judge_models:
+            for m in additional_judge_models:
+                additional_model_results[m].update(
+                    {f"judge_{k}": v for k, v in evaluate_llm_judge(additional_judge_paths[m]).items()}
+                )
+                print(f"Additional judge {m}: {additional_model_results[m]['judge_LLM_Judge_Score']:.4f}")
 
-    print(f"\n{'='*70}")
-    print("  COMPARISON: Base  vs  Fine-tuned (LoRA)")
-    print(f"{'='*70}")
-    print(f"  {'Variant':<10} {'Metric':<12} {'Base':>{col_w}} {'Fine-tuned':>{col_w}} {'Δ':>{col_w}}")
-    print(f"  {'-'*62}")
-    for v in VARIANTS:
-        first = True
-        for m in METRICS:
-            if m == "LLM_Judge_Score" and v != "RAG":
-                continue
-            key = f"judge_LLM_Judge_Score" if m == "LLM_Judge_Score" else f"{m}_{v}"
-            base_val = base_results.get(key, float("nan"))
-            ft_val   = ft_results.get(key, float("nan"))
-            delta    = ft_val - base_val
-            sign     = "+" if delta >= 0 else ""
-            label    = v.capitalize() if first else ""
-            print(f"  {label:<10} {m:<12} {base_val:>{col_w}.4f} {ft_val:>{col_w}.4f} {sign}{delta:>{col_w-1}.4f}")
-            first = False
-        print(f"  {'-'*62}")
-    print(f"{'='*70}\n")
-
-    out_path = run_dir / "comparison.json"
+    # Save re-evaluated comparison
+    out_dir = responses_path.parent / f"reeval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "comparison.json"
     with open(out_path, "w") as f:
-        json.dump({
-                # raw model output
+        json.dump(
+            {
                 "base_raw": base_raw,
                 "fine_tuned_raw": ft_raw,
-                
-                # evaluation of model output (+ LLM as a judge)
                 "base": base_results,
                 "fine_tuned": ft_results,
-
-                # additional models
-                "additional_models": additional_models,
-                "additional_model_raw": additional_model_raw,
                 "additional_model_results": additional_model_results,
-                
-                # computed metrics
-                "metrics": metrics,
-            }, f, indent=2)
+            },
+            f,
+            indent=2,
+        )
     print(f"Results saved to {out_path}")
 
-    return base_raw, ft_raw, base_results, ft_results
+    return base_raw, ft_raw, base_results, ft_results, additional_model_results
