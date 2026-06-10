@@ -1,15 +1,29 @@
-torch==2.6.0
-transformers
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+
+#LoRA/HF
+transformers==4.46.3
 datasets
-peft
-trl
-liger-kernel
-accelerate
-bitsandbytes
-bert-score
-nltk
-numpy
+peft==0.13.2
+trl==0.12.2
+accelerate==1.1.1
 huggingface_hub
-tqdm
+
+# QLoRA 
+bitsandbytes
+
+# Tokenizers / model utilities
 sentencepiece
 protobuf
+
+# Evaluation
+bert-score
+nltk
+
+numpy
+tqdm
+
+# Optional acceleration
+liger-kernel
