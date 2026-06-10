@@ -26,4 +26,4 @@ numpy
 tqdm
 
 # Optional acceleration
-liger-kernel
+liger-kernel<0.5.0

@@ -72,6 +72,7 @@ def main() -> None:
     # ───── 6. nltk ───────────────────────────────────────────────────
     import nltk
     nltk.download('wordnet')
+    nltk.download('omw-1.4')
 
     print("All assets cached. You can now submit the SLURM job.")
 
