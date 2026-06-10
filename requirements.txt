@@ -1,0 +1,15 @@
+torch==2.6.0
+transformers
+datasets
+peft
+trl
+liger-kernel
+accelerate
+bitsandbytes
+bert-score
+nltk
+numpy
+huggingface_hub
+tqdm
+sentencepiece
+protobuf

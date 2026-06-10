@@ -1,0 +1,10 @@
+.env/
+__pycache__/ 
+logs/
+=2.1.0/
+nltk_data/
+=2.1.0
+hf_token.txt
+models/
+anilegin/
+.anilegin/
