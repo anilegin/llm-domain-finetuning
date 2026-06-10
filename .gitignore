@@ -8,3 +8,4 @@ hf_token.txt
 models/
 anilegin/
 .anilegin/
+.env
