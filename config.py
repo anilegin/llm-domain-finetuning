@@ -6,7 +6,8 @@ from pathlib import Path
 MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
 LITTLE_MODEL_1_ID = "Qwen/Qwen3-0.6B"
 LITTLE_MODEL_2_ID = "HuggingFaceTB/SmolLM2-360M-Instruct"
-JUDGE_MODEL_ID = "microsoft/Phi-3.5-mini-instruct"
+#JUDGE_MODEL_ID = "microsoft/Phi-3.5-mini-instruct"
+JUDGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 
 DATA_DIR = Path("training_data")
 MODELS_DIR = Path("models")

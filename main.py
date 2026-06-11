@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from config import DATA_DIR, MODELS_DIR, LITTLE_MODEL_1_ID, LITTLE_MODEL_2_ID
+from config import DATA_DIR, MODELS_DIR, LITTLE_MODEL_1_ID, LITTLE_MODEL_2_ID, JUDGE_MODEL_ID
 from evaluate import compare_models, evaluate_from_responses
 from train import train
 
@@ -264,22 +264,20 @@ if __name__ == "__main__":
     elif args.light_eval:
         if not args.responses_path:
             raise ValueError("--light_eval requires --responses_path")
-        # this includes both base and ft results
+
+        judge_model_names = None
         if args.little_models_eval:
-            evaluate_from_responses(
-                responses_path=args.responses_path, 
-                llm_judge_dir=args.llm_judge_dir,
-                num_samples=args.eval_samples,
-                seed=args.seed,
-                additional_models=[LITTLE_MODEL_1_ID,LITTLE_MODEL_2_ID]
-            )
-        else:
-            evaluate_from_responses(
-                responses_path=args.responses_path, 
-                llm_judge_dir=args.llm_judge_dir,
-                num_samples=args.eval_samples,
-                seed=args.seed,
-            )
+            judge_model_names = [JUDGE_MODEL_ID]
+
+        evaluate_from_responses(
+            responses_path=args.responses_path,
+            llm_judge_dir=args.llm_judge_dir,
+            num_samples=args.eval_samples,
+            seed=args.seed,
+            run_llm_judge=args.run_llm_judge,
+            judge_model_names=judge_model_names,
+            batch_size=args.eval_batch_size,
+        )
 
     else:
         print("No mode selected. Please select a mode to run.")

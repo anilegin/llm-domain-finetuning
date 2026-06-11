@@ -861,78 +861,337 @@ def compare_models(
     return base_raw, ft_raw, base_results, ft_results
 
 
+
+def _add_judge_metrics_to_report(
+    metrics: dict,
+    base_results: dict,
+    ft_results: dict,
+    judge_results: dict,
+) -> None:
+    """
+    Add individual judge scores and average judge score into:
+      - base_results
+      - ft_results
+      - metrics
+
+    judge_results format:
+    {
+        "judge_name": {
+            "base": {"LLM_Judge_Score": ..., "LLM_Judge_N": ...},
+            "fine_tuned": {"LLM_Judge_Score": ..., "LLM_Judge_N": ...},
+            "base_path": "...",
+            "fine_tuned_path": "..."
+        }
+    }
+    """
+    if not judge_results:
+        return
+
+    base_scores = []
+    ft_scores = []
+
+    for judge_name, jr in judge_results.items():
+        base_score = jr["base"]["LLM_Judge_Score"]
+        ft_score = jr["fine_tuned"]["LLM_Judge_Score"]
+        base_n = jr["base"]["LLM_Judge_N"]
+        ft_n = jr["fine_tuned"]["LLM_Judge_N"]
+        delta = ft_score - base_score
+
+        safe_name = str(judge_name).replace("/", "__")
+
+        base_results[f"judge_{safe_name}_LLM_Judge_Score"] = base_score
+        base_results[f"judge_{safe_name}_LLM_Judge_N"] = base_n
+
+        ft_results[f"judge_{safe_name}_LLM_Judge_Score"] = ft_score
+        ft_results[f"judge_{safe_name}_LLM_Judge_N"] = ft_n
+
+        metrics[f"LLM_Judge_RAG_{safe_name}"] = {
+            "base": base_score,
+            "fine_tuned": ft_score,
+            "delta": delta,
+            "variant": "RAG",
+            "metric": "LLM_Judge_Score",
+            "judge": judge_name,
+            "base_n": base_n,
+            "fine_tuned_n": ft_n,
+            "base_path": jr["base_path"],
+            "fine_tuned_path": jr["fine_tuned_path"],
+        }
+
+        base_scores.append(base_score)
+        ft_scores.append(ft_score)
+
+    avg_base = float(np.mean(base_scores))
+    avg_ft = float(np.mean(ft_scores))
+    avg_delta = avg_ft - avg_base
+
+    base_results["judge_avg_LLM_Judge_Score"] = avg_base
+    ft_results["judge_avg_LLM_Judge_Score"] = avg_ft
+
+    metrics["LLM_Judge_RAG_average"] = {
+        "base": avg_base,
+        "fine_tuned": avg_ft,
+        "delta": avg_delta,
+        "variant": "RAG",
+        "metric": "Average_LLM_Judge_Score",
+        "num_judges": len(judge_results),
+        "judges": list(judge_results.keys()),
+    }
+
+
+
 def evaluate_from_responses(
     responses_path: str | Path,
     llm_judge_dir: str | Path | None = None,
-    additional_judge_models: list[str] | None = None,
-    num_samples: int = 200,
+    num_samples: int | None = None,
     seed: int = 42,
+    run_llm_judge: bool = False,
+    judge_model_names: list[str] | None = None,
+    batch_size: int = 16,
 ):
     """
-    Recompute metrics from a previously saved comparison.json without
-    regenerating any model responses. Optionally run multiple LLMs as judges.
+    Recompute metrics from a saved comparison.json without regenerating model responses.
+
+    Normal metrics are always recomputed.
+
+    If run_llm_judge=True:
+        compute LLM judge outputs first and save them under llm_judge_dir.
+
+    Then:
+        check whether judge outputs exist.
+        if they exist, load them and add judge metrics to the final report.
     """
     responses_path = Path(responses_path)
+
     with open(responses_path) as f:
         data = json.load(f)
+
     base_raw = data["base_raw"]
-    ft_raw   = data["fine_tuned_raw"]
+    ft_raw = data["fine_tuned_raw"]
 
-    print(f"\nLoaded {len(base_raw)} base responses and {len(ft_raw)} fine-tuned responses from {responses_path}")
+    if len(base_raw) != len(ft_raw):
+        raise ValueError(
+            f"base_raw and fine_tuned_raw have different lengths: "
+            f"{len(base_raw)} vs {len(ft_raw)}"
+        )
 
-    # --- classic metrics ---
+    rng = random.Random(seed)
+
+    if num_samples is None or num_samples >= len(base_raw):
+        indices = list(range(len(base_raw)))
+    else:
+        indices = rng.sample(range(len(base_raw)), k=num_samples)
+
+    base_eval = [base_raw[i] for i in indices]
+    ft_eval = [ft_raw[i] for i in indices]
+
+    print(f"\nLoaded responses from: {responses_path}")
+    print(f"Total saved samples: {len(base_raw)}")
+    print(f"Evaluating samples: {len(indices)}")
+
+    # ==================== Normal metrics ====================
     print("\nBase model scores:")
-    base_results = evaluate_responses(base_raw)
+    base_results = evaluate_responses(base_eval)
+
     print("\nFine-tuned model scores:")
-    ft_results = evaluate_responses(ft_raw)
+    ft_results = evaluate_responses(ft_eval)
 
-    # --- additional models metrics (if any) ---
-    additional_model_results = {}
-    if additional_judge_models:
-        additional_model_raw = data.get("additional_model_raw", {})
-        for model_name in additional_judge_models:
-            if model_name in additional_model_raw:
-                print(f"\nAdditional model: {model_name} scores:")
-                additional_model_results[model_name] = evaluate_responses(additional_model_raw[model_name])
+    run_dir = responses_path.parent / f"reeval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- LLM-as-a-judge ---
-    if llm_judge_dir:
-        llm_judge_dir = Path(llm_judge_dir)
-        base_judge_path = llm_judge_dir / "base.jsonl"
-        ft_judge_path   = llm_judge_dir / "fine_tuned.jsonl"
-        additional_judge_paths = {
-            m: llm_judge_dir / f"{Path(m).name}.jsonl" for m in additional_judge_models
-        } if additional_judge_models else {}
+    metrics = {}
 
-        # Evaluate previously saved judge outputs
-        base_judge = evaluate_llm_judge(base_judge_path)
-        ft_judge   = evaluate_llm_judge(ft_judge_path)
-        base_results.update({f"judge_{k}": v for k, v in base_judge.items()})
-        ft_results.update({f"judge_{k}": v for k, v in ft_judge.items()})
+    # Save old metrics into metrics dict
+    for variant in ["baseline", "RAG", "oracle"]:
+        for metric_name in ["EM", "SubEM", "METEOR", "BERT_F1"]:
+            key = f"{metric_name}_{variant}"
+            base_val = base_results.get(key, float("nan"))
+            ft_val = ft_results.get(key, float("nan"))
+            metrics[key] = {
+                "base": base_val,
+                "fine_tuned": ft_val,
+                "delta": ft_val - base_val,
+                "variant": variant,
+                "metric": metric_name,
+            }
 
-        if additional_judge_models:
-            for m in additional_judge_models:
-                additional_model_results[m].update(
-                    {f"judge_{k}": v for k, v in evaluate_llm_judge(additional_judge_paths[m]).items()}
-                )
-                print(f"Additional judge {m}: {additional_model_results[m]['judge_LLM_Judge_Score']:.4f}")
+    # ==================== Judge output directory ====================
+    if llm_judge_dir is not None:
+        judge_out_dir = Path(llm_judge_dir)
+    else:
+        judge_out_dir = responses_path.parent / "LLM_judge_outputs"
 
-    # Save re-evaluated comparison
-    out_dir = responses_path.parent / f"reeval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "comparison.json"
+    judge_out_dir.mkdir(parents=True, exist_ok=True)
+
+    if judge_model_names is None:
+        judge_model_names = ["default_judge"]
+
+    # ==================== First compute judge scores if requested ====================
+    if run_llm_judge:
+        device = (
+            "cuda" if torch.cuda.is_available()
+            else "mps" if torch.backends.mps.is_available()
+            else "cpu"
+        )
+
+        print(f"\n{'=' * 60}")
+        print("COMPUTING LLM JUDGE OUTPUTS")
+        print(f"{'=' * 60}")
+        print(f"Judge outputs directory: {judge_out_dir}")
+
+        for judge_name in judge_model_names:
+            safe_name = str(judge_name).replace("/", "__")
+
+            if judge_name == "default_judge":
+                base_judge_path = judge_out_dir / "base.jsonl"
+                ft_judge_path = judge_out_dir / "fine_tuned.jsonl"
+            else:
+                base_judge_path = judge_out_dir / f"base__{safe_name}.jsonl"
+                ft_judge_path = judge_out_dir / f"fine_tuned__{safe_name}.jsonl"
+
+            print(f"\n{'=' * 60}")
+            print(f"Judge model: {judge_name}")
+            print(f"{'=' * 60}")
+
+            with timer(f"Load judge model: {judge_name}", device):
+                if judge_name == "default_judge":
+                    judge_model, judge_tokenizer = load_judge_model(device)
+                else:
+                    judge_model, judge_tokenizer = load_judge_model(device, model_name=judge_name)
+
+            _describe_model(judge_model, f"judge_model_{safe_name}")
+
+            print("\nBase model — LLM Judge:")
+            compute_llm_judge(
+                results=base_eval,
+                judge_model=judge_model,
+                judge_tokenizer=judge_tokenizer,
+                num_samples=len(base_eval),
+                seed=seed,
+                save_path=base_judge_path,
+                batch_size=batch_size,
+            )
+
+            print("\nFine-tuned model — LLM Judge:")
+            compute_llm_judge(
+                results=ft_eval,
+                judge_model=judge_model,
+                judge_tokenizer=judge_tokenizer,
+                num_samples=len(ft_eval),
+                seed=seed,
+                save_path=ft_judge_path,
+                batch_size=batch_size,
+            )
+
+            del judge_model
+            free_gpu_memory()
+
+    # ==================== Then load judge outputs if they exist ====================
+    judge_results = {}
+
+    for judge_name in judge_model_names:
+        safe_name = str(judge_name).replace("/", "__")
+
+        if judge_name == "default_judge":
+            base_judge_path = judge_out_dir / "base.jsonl"
+            ft_judge_path = judge_out_dir / "fine_tuned.jsonl"
+        else:
+            base_judge_path = judge_out_dir / f"base__{safe_name}.jsonl"
+            ft_judge_path = judge_out_dir / f"fine_tuned__{safe_name}.jsonl"
+
+        if base_judge_path.exists() and ft_judge_path.exists():
+            base_judge = evaluate_llm_judge(base_judge_path)
+            ft_judge = evaluate_llm_judge(ft_judge_path)
+
+            judge_results[judge_name] = {
+                "base": base_judge,
+                "fine_tuned": ft_judge,
+                "base_path": str(base_judge_path),
+                "fine_tuned_path": str(ft_judge_path),
+            }
+
+            print(
+                f"\nLoaded judge scores for {judge_name}: "
+                f"Base={base_judge['LLM_Judge_Score']:.4f}, "
+                f"FT={ft_judge['LLM_Judge_Score']:.4f}"
+            )
+        else:
+            print(f"\nNo complete judge files found for {judge_name}. Skipping judge metric.")
+            print(f"Missing/check: {base_judge_path}")
+            print(f"Missing/check: {ft_judge_path}")
+
+    # Add individual judge metrics + average judge metric
+    _add_judge_metrics_to_report(
+        metrics=metrics,
+        base_results=base_results,
+        ft_results=ft_results,
+        judge_results=judge_results,
+    )
+
+    # ==================== Print report ====================
+    print(f"\n{'=' * 70}")
+    print("  COMPARISON: Base  vs  Fine-tuned (LoRA)")
+    print(f"{'=' * 70}")
+    print(f"  {'Variant':<10} {'Metric':<16} {'Base':>12} {'Fine-tuned':>12} {'Δ':>12}")
+    print(f"  {'-' * 66}")
+
+    for variant in ["baseline", "RAG", "oracle"]:
+        first = True
+        for metric_name in ["EM", "SubEM", "METEOR", "BERT_F1"]:
+            key = f"{metric_name}_{variant}"
+            row = metrics[key]
+            label = variant.capitalize() if first else ""
+            sign = "+" if row["delta"] >= 0 else ""
+
+            print(
+                f"  {label:<10} {metric_name:<16} "
+                f"{row['base']:>12.4f} {row['fine_tuned']:>12.4f} "
+                f"{sign}{row['delta']:>11.4f}"
+            )
+            first = False
+
+        print(f"  {'-' * 66}")
+
+    if judge_results:
+        print(f"\n{'=' * 70}")
+        print("  LLM JUDGE COMPARISON")
+        print(f"{'=' * 70}")
+        print(f"  {'Judge':<32} {'Base':>12} {'Fine-tuned':>12} {'Δ':>12}")
+        print(f"  {'-' * 70}")
+
+        for judge_name, jr in judge_results.items():
+            base_val = jr["base"]["LLM_Judge_Score"]
+            ft_val = jr["fine_tuned"]["LLM_Judge_Score"]
+            delta = ft_val - base_val
+            sign = "+" if delta >= 0 else ""
+            print(f"  {judge_name:<32} {base_val:>12.4f} {ft_val:>12.4f} {sign}{delta:>11.4f}")
+
+        avg = metrics["LLM_Judge_RAG_average"]
+        sign = "+" if avg["delta"] >= 0 else ""
+        print(f"  {'AVERAGE':<32} {avg['base']:>12.4f} {avg['fine_tuned']:>12.4f} {sign}{avg['delta']:>11.4f}")
+        print(f"{'=' * 70}\n")
+
+    # ==================== Save final report ====================
+    out_path = run_dir / "comparison.json"
+
     with open(out_path, "w") as f:
         json.dump(
             {
-                "base_raw": base_raw,
-                "fine_tuned_raw": ft_raw,
+                "base_raw": base_eval,
+                "fine_tuned_raw": ft_eval,
                 "base": base_results,
                 "fine_tuned": ft_results,
-                "additional_model_results": additional_model_results,
+                "judge_results": judge_results,
+                "metrics": metrics,
+                "source_responses_path": str(responses_path),
+                "llm_judge_dir": str(judge_out_dir),
+                "sample_indices": indices,
             },
             f,
             indent=2,
         )
-    print(f"Results saved to {out_path}")
 
-    return base_raw, ft_raw, base_results, ft_results, additional_model_results
+    print(f"Results saved to {out_path}")
+    print(f"Judge outputs saved/read from: {judge_out_dir}")
+
+    return base_eval, ft_eval, base_results, ft_results

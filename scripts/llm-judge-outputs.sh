@@ -76,8 +76,10 @@ echo "============================================="
 
 python main.py \
     --light_eval \
-    --responses_path outputs/YOUR_RUN_DIR/comparison.json \
-    --run_little_models_eval
+    --responses_path outputs/qwen-rag-lora-k3-seq4096-lr1e4_test_20260610_181555/comparison.json \
+    --llm_judge_dir outputs/qwen-rag-lora-k3-seq4096-lr1e4_test_20260610_181555/LLM_judge_outputs \
+    --eval_batch_size 16 \
+    --run_llm_judge 
 
 echo "============================================="
 echo "LLM Scored outputs at: $(date)"

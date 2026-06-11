@@ -57,27 +57,38 @@ def load_base_model(device: str, use_qlora: bool = False, model_name: str | None
         return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
 
 
-def load_judge_model(device: str):
-    """Load Phi-3.5-mini-instruct as a judge; returns (model, tokenizer).
+def load_judge_model(device: str, model_name: str | None = None):
+    """Load a judge model; returns (model, tokenizer).
 
-    The caller is responsible for deleting the model and freeing GPU memory
-    when done:
+    By default, loads JUDGE_MODEL_ID from config.py.
+    If model_name is provided, loads that model instead.
+
+    The caller is responsible for deleting the model and freeing GPU memory:
         del judge_model
         free_gpu_memory()
     """
-    tokenizer = AutoTokenizer.from_pretrained(JUDGE_MODEL_ID, local_files_only=True)
+    judge_id = model_name or JUDGE_MODEL_ID
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        judge_id,
+        local_files_only=True,
+        trust_remote_code=True,
+    )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
     tokenizer.padding_side = "right"
+
     model = AutoModelForCausalLM.from_pretrained(
-        JUDGE_MODEL_ID,
+        judge_id,
         torch_dtype=float_type,
         device_map=device,
         trust_remote_code=True,
         local_files_only=True,
     )
-    model.eval()
 
+    model.eval()
     return model, tokenizer
 
 
