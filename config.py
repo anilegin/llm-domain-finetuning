@@ -4,14 +4,33 @@ import os
 from pathlib import Path
 
 MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
-LITTLE_MODEL_1_ID = "Qwen/Qwen3-0.6B"
-LITTLE_MODEL_2_ID = "HuggingFaceTB/SmolLM2-360M-Instruct"
+LITTLE_MODEL_1_ID = "Qwen/Qwen3-1.7B"
+LITTLE_MODEL_2_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 #JUDGE_MODEL_ID = "microsoft/Phi-3.5-mini-instruct"
 JUDGE_MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.3"
 
 DATA_DIR = Path("training_data")
 MODELS_DIR = Path("models")
 OUTPUTS_DIR = Path("outputs")
+
+SMOLLM3_MODEL_ID = "HuggingFaceTB/SmolLM3-3B"
+SMOLLM3_OUTPUT_DIR = Path("models/smollm3-rag-lora-k3-seq4096-lr1e4")
+
+SMOLLM3_LORA_R = 16
+SMOLLM3_LORA_ALPHA = 32
+SMOLLM3_LORA_DROPOUT = 0.05
+SMOLLM3_LORA_BIAS = "none"
+
+# These names are validated against model.named_modules() before PEFT is applied.
+SMOLLM3_LORA_TARGET_MODULES = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
 
 # Course-provided token for the dataset; override via HF_TOKEN env variable.
 HF_TOKEN: str = os.environ.get(

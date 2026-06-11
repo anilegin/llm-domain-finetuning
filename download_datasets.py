@@ -22,7 +22,7 @@ import argparse
 from huggingface_hub import snapshot_download
 from datasets import load_dataset
 
-from config import JUDGE_MODEL_ID, MODEL_ID, HF_TOKEN, LITTLE_MODEL_1_ID, LITTLE_MODEL_2_ID
+from config import JUDGE_MODEL_ID, MODEL_ID, HF_TOKEN, LITTLE_MODEL_1_ID, LITTLE_MODEL_2_ID, SMOLLM3_MODEL_ID
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +73,14 @@ def main() -> None:
     import nltk
     nltk.download('wordnet')
     nltk.download('omw-1.4')
+
+    # ───── 7. SMOLLM ───────────────────────────────────────────────────
+    print(f"Downloading SmolLM model: {SMOLLM3_MODEL_ID}")
+    path = snapshot_download(
+        repo_id=SMOLLM3_MODEL_ID,
+        token=args.hf_token or HF_TOKEN,
+    )
+    print(f"Cached {SMOLLM3_MODEL_ID} at: {path}")
 
     print("All assets cached. You can now submit the SLURM job.")
 
