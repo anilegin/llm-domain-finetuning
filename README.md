@@ -223,10 +223,10 @@ Torch 2.6 is needed because BERTScore's DeBERTa model uses a legacy `.bin` check
 
 ## Common Commands
 
-Cache SmolLM3:
+Cache models and datasets:
 
 ```bash
-python download_smollm3.py
+python download_dataset.py
 ```
 
 Train Qwen2.5 LoRA:
@@ -241,24 +241,6 @@ Train SmolLM3 LoRA:
 ```bash
 mkdir -p logs
 sbatch scripts/run_smollm3_training.sh
-```
-
-Run the 300-query comparison:
-
-```bash
-python compare_small_models.py
-```
-
-Evaluate SmolLM3 on the same saved 300-query set:
-
-```bash
-sbatch scripts/run_smollm3_eval.sh
-```
-
-Evaluate SmolLM3 on the full test set:
-
-```bash
-SOURCE_RUN_DIR= sbatch scripts/run_smollm3_eval.sh
 ```
 
 ## Output Layout
