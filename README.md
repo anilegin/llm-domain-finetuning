@@ -219,8 +219,6 @@ accelerate 1.10.1
 trl 0.15.2
 ```
 
-Torch 2.6 is needed because BERTScore's DeBERTa model uses a legacy `.bin` checkpoint, and newer Transformers blocks `torch.load` on older Torch versions because of CVE-2025-32434.
-
 ## Common Commands
 
 Cache models and datasets:
