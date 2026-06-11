@@ -53,7 +53,7 @@ ARGS=(
     --k 3
     --batch_size 16
     --judge_batch_size 16
-    --max_new_tokens 256
+    --max_new_tokens 64
 )
 
 if [ -n "$SOURCE_RUN_DIR" ]; then

@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--judge_batch_size", type=int, default=16)
-    parser.add_argument("--max_new_tokens", type=int, default=256)
+    parser.add_argument("--max_new_tokens", type=int, default=64)
     parser.add_argument("--output_dir", default=None)
     parser.add_argument(
         "--source_run_dir",
@@ -70,11 +70,45 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge_model_id", default=JUDGE_MODEL_ID)
     parser.add_argument("--skip_judge", action="store_true")
     parser.add_argument(
+        "--strict_short_prompt",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Append a stronger short-answer instruction for SmolLM3 inference.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Reuse the SmolLM3 answer file in --output_dir if present.",
     )
     return parser.parse_args()
+
+
+def clean_smollm3_answer(text: str) -> str:
+    text = text.strip()
+    if "</think>" in text:
+        text = text.split("</think>", 1)[1].strip()
+    if text.startswith("<think>"):
+        text = text.replace("<think>", "", 1).strip()
+    return text
+
+
+def strengthen_prompt_records(prompt_records: list[dict]) -> list[dict]:
+    strengthened = []
+    suffix = (
+        "\n\nImportant: output only the shortest answer string. "
+        "Do not write a full sentence, explanation, prefix, citation, or reasoning."
+    )
+    for record in prompt_records:
+        item = dict(record)
+        item["messages"] = {
+            variant: [dict(message) for message in messages]
+            for variant, messages in record["messages"].items()
+        }
+        for variant in ("baseline", "RAG", "oracle"):
+            user_message = item["messages"][variant][-1]
+            user_message["content"] = user_message["content"] + suffix
+        strengthened.append(item)
+    return strengthened
 
 
 def get_rows_from_source_run(dataset, source_run_dir: Path) -> tuple[list, list[int] | None]:
@@ -183,6 +217,8 @@ def main() -> None:
 
     rankings = load_rankings(args.rankings_path)
     prompt_records = build_prompt_records(rows, rankings, args.k)
+    if args.strict_short_prompt:
+        prompt_records = strengthen_prompt_records(prompt_records)
 
     answer_path = answers_dir / f"{safe_name(SMOLLM3_LABEL)}.jsonl"
     if args.resume and answer_path.is_file():
@@ -194,6 +230,9 @@ def main() -> None:
             raise ValueError(
                 f"Saved answers in {answer_path} do not match the selected test sample"
             )
+        for answer in answers:
+            for variant in VARIANTS:
+                answer[variant] = clean_smollm3_answer(answer[variant])
     else:
         model, tokenizer = load_smollm3_lora(Path(args.adapter_path), device)
         answers = generate_answers(
@@ -205,6 +244,9 @@ def main() -> None:
             max_new_tokens=args.max_new_tokens,
             disable_thinking=True,
         )
+        for answer in answers:
+            for variant in VARIANTS:
+                answer[variant] = clean_smollm3_answer(answer[variant])
         save_jsonl(answers, answer_path)
         del model
         del tokenizer
