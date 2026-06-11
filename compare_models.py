@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""Compare two small instruct models and a LoRA-tuned Qwen2.5-3B on test data.
-
-Each model is evaluated in baseline, RAG, and oracle settings. The oracle
-prompt always places the gold chunk first and contains exactly k chunks.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -42,8 +35,6 @@ from evaluate import (
 from model_utils import load_base_model, load_judge_model, load_tokenizer
 from utils import free_gpu_memory, load_rankings
 
-
-VARIANTS = ("baseline", "RAG", "oracle")
 METRIC_NAMES = ("EM", "SubEM", "METEOR", "BERT_P", "BERT_R", "BERT_F1")
 
 
@@ -54,6 +45,13 @@ def parse_args() -> argparse.Namespace:
             "SmolLM2-1.7B-Instruct, and a LoRA-tuned Qwen2.5-3B-Instruct."
         )
     )
+    parser.add_argument(
+        "--split",
+        type=str,
+        default="test",
+        choices=["train", "validation", "test", "blind"],
+        help="Dataset split to evaluate. If 'blind', oracle evaluation is skipped.",
+    )
     parser.add_argument("--num_samples", type=int, default=300)
     parser.add_argument("--k", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
@@ -61,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--judge_batch_size", type=int, default=16)
     parser.add_argument("--max_new_tokens", type=int, default=256)
     parser.add_argument("--dataset_name", default=DATASET_NAME)
-    parser.add_argument("--rankings_path", default=str(DATA_DIR / "test_rankings.jsonl"))
+    parser.add_argument("--rankings_path", default=str(DATA_DIR / "blind_rankings.jsonl"))
     parser.add_argument(
         "--adapter_path",
         default=str(MODELS_DIR / "qwen-rag-lora-k3-seq4096-lr1e4" / "checkpoint-1500"),
@@ -101,7 +99,7 @@ def select_test_rows(dataset, num_samples: int, seed: int) -> tuple[list, list[i
         raise ValueError("--num_samples must be greater than zero")
     if num_samples > len(dataset):
         raise ValueError(
-            f"Requested {num_samples} samples, but the test split has only {len(dataset)}"
+            f"Requested {num_samples} samples, but the split has only {len(dataset)}"
         )
 
     indices = random.Random(seed).sample(range(len(dataset)), k=num_samples)
@@ -130,7 +128,7 @@ def build_oracle_top_k(ranking: list[int], correct_idx: int, k: int) -> list[int
     return [correct_idx] + retrieved[: max(0, k - 1)]
 
 
-def build_prompt_records(rows: list, rankings: dict, k: int) -> list[dict]:
+def build_prompt_records(rows: list, rankings: dict, k: int, split: str) -> list[dict]:
     if k <= 0:
         raise ValueError("--k must be greater than zero")
 
@@ -139,13 +137,9 @@ def build_prompt_records(rows: list, rankings: dict, k: int) -> list[dict]:
         query_id = str(row["query_id"])
         query = row["query"]
         chunks = row["candidate_chunks"]
-        ground_truth = row["short_answer"][0]
-        correct_idx = int(row.get("answer_pos", -1))
-        if correct_idx < 0 or correct_idx >= len(chunks):
-            raise ValueError(
-                f"Invalid answer_pos={correct_idx} for query_id={query_id}; "
-                "oracle evaluation requires a valid gold chunk"
-            )
+        
+        # Handle missing ground truth gracefully for the blind split
+        ground_truth = row["short_answer"][0] if row.get("short_answer") else ""
 
         ranking = get_ranking(row, rankings)
         if len(ranking) < k:
@@ -154,34 +148,46 @@ def build_prompt_records(rows: list, rankings: dict, k: int) -> list[dict]:
             )
 
         rag_top_k = ranking[:k]
-        oracle_top_k = build_oracle_top_k(ranking, correct_idx, k)
-        if len(oracle_top_k) != k or oracle_top_k[0] != correct_idx:
-            raise AssertionError(f"Oracle construction failed for query_id={query_id}")
-
         rag_context = format_chunks(chunks, rag_top_k, k=k)
-        oracle_context = format_chunks(chunks, oracle_top_k, k=k)
-        records.append(
-            {
-                "query_id": query_id,
-                "query": query,
-                "ground_truth": ground_truth,
-                "ranking": ranking,
-                "correct_chunk_index": correct_idx,
-                "correct_in_topk": (
-                    rag_top_k.index(correct_idx) if correct_idx in rag_top_k else -1
-                ),
-                "rag_top_k": rag_top_k,
-                "oracle_top_k": oracle_top_k,
-                "messages": {
-                    "baseline": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": query},
-                    ],
-                    "RAG": build_chat_messages(query, rag_context, answer=None),
-                    "oracle": build_chat_messages(query, oracle_context, answer=None),
-                },
-            }
-        )
+
+        record = {
+            "query_id": query_id,
+            "query": query,
+            "ground_truth": ground_truth,
+            "ranking": ranking,
+            "rag_top_k": rag_top_k,
+            "messages": {
+                "baseline": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": query},
+                ],
+                "RAG": build_chat_messages(query, rag_context, answer=None),
+            },
+        }
+
+        # Only apply oracle logic if this is not the blind split
+        if split != "blind":
+            correct_idx = int(row.get("answer_pos", -1))
+            if correct_idx < 0 or correct_idx >= len(chunks):
+                raise ValueError(
+                    f"Invalid answer_pos={correct_idx} for query_id={query_id}; "
+                    "oracle evaluation requires a valid gold chunk"
+                )
+            
+            oracle_top_k = build_oracle_top_k(ranking, correct_idx, k)
+            if len(oracle_top_k) != k or oracle_top_k[0] != correct_idx:
+                raise AssertionError(f"Oracle construction failed for query_id={query_id}")
+            
+            oracle_context = format_chunks(chunks, oracle_top_k, k=k)
+            record["correct_chunk_index"] = correct_idx
+            record["correct_in_topk"] = (
+                rag_top_k.index(correct_idx) if correct_idx in rag_top_k else -1
+            )
+            record["oracle_top_k"] = oracle_top_k
+            record["messages"]["oracle"] = build_chat_messages(query, oracle_context, answer=None)
+
+        records.append(record)
+        
     return records
 
 
@@ -202,6 +208,7 @@ def generate_answers(
     model,
     tokenizer,
     prompt_records: list[dict],
+    variants: list[str],
     device: str,
     batch_size: int,
     max_new_tokens: int,
@@ -217,7 +224,7 @@ def generate_answers(
         for record in prompt_records
     ]
 
-    for variant in VARIANTS:
+    for variant in variants:
         prompts = [
             render_prompt(tokenizer, record["messages"][variant], disable_thinking)
             for record in prompt_records
@@ -260,16 +267,17 @@ def load_jsonl(path: Path) -> list[dict]:
 def validate_saved_answers(
     answers: list[dict],
     prompt_records: list[dict],
+    variants: list[str],
     path: Path,
 ) -> None:
     expected_ids = [record["query_id"] for record in prompt_records]
     actual_ids = [record.get("query_id") for record in answers]
     if actual_ids != expected_ids:
         raise ValueError(
-            f"Saved answers do not match this sampled test set: {path}. "
+            f"Saved answers do not match this sampled set: {path}. "
             "Use the same --seed/--num_samples or start a new output directory."
         )
-    for variant in VARIANTS:
+    for variant in variants:
         if any(variant not in record for record in answers):
             raise ValueError(f"Saved answers are missing {variant!r} responses: {path}")
 
@@ -342,19 +350,21 @@ def judge_variant(
     return float(np.mean([item["judge_score"] for item in judged]))
 
 
-def build_comparison_rows(all_metrics: dict[str, dict]) -> list[dict]:
+def build_comparison_rows(all_metrics: dict[str, dict], variants: list[str]) -> list[dict]:
     rows = []
     for model_name, metrics in all_metrics.items():
-        for variant in VARIANTS:
+        for variant in variants:
             for metric_name in METRIC_NAMES:
-                rows.append(
-                    {
-                        "model": model_name,
-                        "setting": variant,
-                        "metric": metric_name,
-                        "score": float(metrics[f"{metric_name}_{variant}"]),
-                    }
-                )
+                metric_key = f"{metric_name}_{variant}"
+                if metric_key in metrics:
+                    rows.append(
+                        {
+                            "model": model_name,
+                            "setting": variant,
+                            "metric": metric_name,
+                            "score": float(metrics[metric_key]),
+                        }
+                    )
             judge_key = f"LLM_Judge_{variant}"
             if judge_key in metrics:
                 rows.append(
@@ -378,7 +388,7 @@ def save_comparison_csv(rows: list[dict], path: Path) -> None:
         writer.writerows(rows)
 
 
-def print_comparison(rows: list[dict], model_names: list[str]) -> None:
+def print_comparison(rows: list[dict], model_names: list[str], variants: list[str]) -> None:
     lookup = {
         (row["setting"], row["metric"], row["model"]): row["score"]
         for row in rows
@@ -393,7 +403,7 @@ def print_comparison(rows: list[dict], model_names: list[str]) -> None:
     )
     print(header)
     print("-" * len(header))
-    for variant in VARIANTS:
+    for variant in variants:
         for metric_name in metrics:
             values = [
                 lookup.get((variant, metric_name, model_name), float("nan"))
@@ -418,6 +428,9 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
+    # Establish variants dynamically based on the requested split
+    variants = ["baseline", "RAG"] if args.split == "blind" else ["baseline", "RAG", "oracle"]
+
     device = choose_device()
     adapter_path = Path(args.adapter_path)
     rankings_path = Path(args.rankings_path)
@@ -427,7 +440,7 @@ def main() -> None:
     run_dir = (
         Path(args.output_dir)
         if args.output_dir
-        else OUTPUTS_DIR / f"small_models_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        else OUTPUTS_DIR / f"small_models_{args.split}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     )
     if args.resume and args.output_dir is None:
         raise ValueError("--resume requires --output_dir pointing to the previous run")
@@ -436,15 +449,15 @@ def main() -> None:
     judge_dir = run_dir / "judge"
 
     print(f"Device: {device}")
-    print(f"Loading test split from {args.dataset_name}")
+    print(f"Loading {args.split} split from {args.dataset_name}")
     dataset = load_dataset(
         args.dataset_name,
-        split="test",
+        split=args.split,
         token=args.hf_token or HF_TOKEN,
     )
     rows, sample_indices = select_test_rows(dataset, args.num_samples, args.seed)
     rankings = load_rankings(str(rankings_path))
-    prompt_records = build_prompt_records(rows, rankings, args.k)
+    prompt_records = build_prompt_records(rows, rankings, args.k, args.split)
 
     model_specs = [
         ("Qwen3-1.7B", args.qwen3_model_id, "standard", True),
@@ -461,7 +474,7 @@ def main() -> None:
         if args.resume and path.is_file():
             print(f"Reusing saved answers from {path}")
             answers = load_jsonl(path)
-            validate_saved_answers(answers, prompt_records, path)
+            validate_saved_answers(answers, prompt_records, variants, path)
         else:
             if model_type == "lora":
                 model, tokenizer = load_fine_tuned_model(adapter_path, device)
@@ -472,6 +485,7 @@ def main() -> None:
                 model=model,
                 tokenizer=tokenizer,
                 prompt_records=prompt_records,
+                variants=variants,
                 device=device,
                 batch_size=args.batch_size,
                 max_new_tokens=args.max_new_tokens,
@@ -490,13 +504,16 @@ def main() -> None:
         all_metrics[label] = evaluate_responses(answers)
 
     if not args.skip_judge:
+        if args.split == "blind":
+            print("\nWarning: Running the judge model on the 'blind' split where ground truth answers are missing.")
+        
         print(f"\nLoading judge model: {args.judge_model_id}")
         judge_model, judge_tokenizer = load_judge_model(
             device,
             model_name=args.judge_model_id,
         )
         for label, answers in all_answers.items():
-            for variant in VARIANTS:
+            for variant in variants:
                 judge_path = judge_dir / f"{safe_name(label)}__{variant}.jsonl"
                 score = judge_variant(
                     results=answers,
@@ -511,7 +528,7 @@ def main() -> None:
         del judge_tokenizer
         free_gpu_memory()
 
-    comparison_rows = build_comparison_rows(all_metrics)
+    comparison_rows = build_comparison_rows(all_metrics, variants)
     comparison_csv = run_dir / "comparison.csv"
     save_comparison_csv(comparison_rows, comparison_csv)
 
@@ -521,7 +538,7 @@ def main() -> None:
             {
                 "config": {
                     "dataset_name": args.dataset_name,
-                    "split": "test",
+                    "split": args.split,
                     "num_samples": args.num_samples,
                     "sample_indices": sample_indices,
                     "seed": args.seed,
@@ -542,7 +559,7 @@ def main() -> None:
             ensure_ascii=False,
         )
 
-    print_comparison(comparison_rows, [spec[0] for spec in model_specs])
+    print_comparison(comparison_rows, [spec[0] for spec in model_specs], variants)
     print(f"\nComparison CSV: {comparison_csv}")
     print(f"Full report: {report_path}")
 

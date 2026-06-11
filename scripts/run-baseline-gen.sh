@@ -36,6 +36,11 @@ source "$VENV_DIR/bin/activate"
 # nvidia-smi must use the compute node's system NVML library.
 
 export NLTK_DATA="$PROJECT_DIR/nltk_data"
+
+export HF_HOME="$SCRATCH/.cache/huggingface"
+export TORCH_HOME="$SCRATCH/.cache/torch"
+export PIP_CACHE_DIR="$SCRATCH/.cache/pip"
+
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
@@ -71,11 +76,31 @@ echo "============================================="
 #     --judge_batch_size 16 \
 #     --max_new_tokens 256 \
 #     --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4/checkpoint-1500 \
-#     --rankings_path training_data/test_rankings.jsonl
+#     --rankings_path training_data/blind_rankings.jsonl
+
+# python compare_models.py \
+#   --output_dir outputs/small_models_test_20260611_095927 \
+#   --resume
 
 python compare_models.py \
-  --output_dir outputs/small_models_test_20260611_095927 \
-  --resume
+    --split test \
+    --num_samples 300 \
+    --k 3 \
+    --batch_size 16 \
+    --judge_batch_size 16 \
+    --max_new_tokens 256 \
+    --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4/checkpoint-1500 \
+    --rankings_path training_data/test_rankings.jsonl
+
+  # python compare_models.py \
+  #   --split test \
+  #   --num_samples 300 \
+  #   --k 3 \
+  #   --batch_size 16 \
+  #   --judge_batch_size 16 \
+  #   --max_new_tokens 256 \
+  #   --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4/checkpoint-1500 \
+  #   --rankings_path training_data/test_rankings.jsonl
 
 echo "============================================="
 echo "Evaluation completed: $(date)"

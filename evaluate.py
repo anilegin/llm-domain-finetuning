@@ -336,7 +336,9 @@ def evaluate_responses(results: list) -> dict:
     Score baseline / RAG / oracle responses with EM, SubEM, METEOR, BERTScore.
     Returns a flat dict of mean scores keyed as <metric>_<variant>.
     """
-    variants = ["baseline", "RAG", "oracle"]
+    if not results:
+        return {}
+    variants = [v for v in ["baseline", "RAG", "oracle"] if v in results[0]]
     accum = {
         v: {"em": [], "sub_em": [], "meteor": [], "bert_p": [], "bert_r": [], "bert_f1": []}
         for v in variants
