@@ -54,12 +54,15 @@ fi
 # ==================== Offline / cache settings ====================
 export NLTK_DATA="$PROJECT_DIR/nltk_data"
 
-# Use cache only. Make sure you already ran prefetch.py on login node.
+export HF_HOME="$SCRATCH/.cache/huggingface"
+export TORCH_HOME="$SCRATCH/.cache/torch"
+export PIP_CACHE_DIR="$SCRATCH/.cache/pip"
+
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
 
 # Optional: put HF cache explicitly if needed
 # export HF_HOME="$PROJECT_DIR/.cache/huggingface"
@@ -110,6 +113,19 @@ EOF
 # max_seq_length=4096 because A100 can handle longer RAG context.
 # batch_size=2 is safer for 4096 context; grad_accum=8 keeps effective batch size 16.
 
+# python main.py \
+#     --train_rag \
+#     --epochs 3 \
+#     --batch_size 2 \
+#     --gradient_accumulation_steps 8 \
+#     --learning_rate 1e-4 \
+#     --max_seq_length 4096 \
+#     --k 3 \
+#     --output_dir models/qwen-rag-lora-k3-seq4096-lr1e4 \
+#     --rankings_path_training training_data/training_rankings.jsonl \
+#     --rankings_path_test training_data/test_rankings.jsonl \
+#     --rankings_path_blind training_data/blind_rankings.jsonl
+
 python main.py \
     --train_rag \
     --epochs 3 \
@@ -118,10 +134,12 @@ python main.py \
     --learning_rate 1e-4 \
     --max_seq_length 4096 \
     --k 3 \
-    --output_dir models/qwen-rag-lora-k3-seq4096-lr1e4 \
+    --output_dir models/qwen-rag-lora-k3-seq4096-lr1e4-corrupt \
     --rankings_path_training training_data/training_rankings.jsonl \
     --rankings_path_test training_data/test_rankings.jsonl \
-    --rankings_path_blind training_data/blind_rankings.jsonl
+    --rankings_path_blind training_data/blind_rankings.jsonl \
+    --corrupt 
+
 
 echo "============================================="
 echo "Training finished at: $(date)"

@@ -110,6 +110,10 @@ def parse_args() -> argparse.Namespace:
         help="Train the RAG model",
     )
     parser.add_argument(
+        "--corrupt", action="store_true",
+        help="Corrupt 10% true answers so model says I do not know.",
+    )
+    parser.add_argument(
         "--full_eval", action="store_true", default=False,
         help="only runs compare_models, this is a full comparison of 2 models. Complete generation and evaluation",
     )
@@ -144,6 +148,7 @@ if __name__ == "__main__":
             hf_token=args.hf_token,
             k=args.k,
             seed=args.seed,
+            corrupt = args.corrupt
         )
         compare_models(
             adapter_path=adapter_path,

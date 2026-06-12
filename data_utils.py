@@ -1,7 +1,3 @@
-# To check a sample from the training set:
-# python data_utils.py --split train --rankings_path training_data/training_rankings.jsonl --sample_idx 0 --k 3
-
-
 from __future__ import annotations
 
 import argparse
@@ -16,6 +12,9 @@ from model_utils import load_tokenizer
 
 
 DATASET_NAME = "sapienzanlp-course-materials/hw-mnlp-2026"
+
+
+UNKNOWN_ANSWER = "I don't know based on the retrieved information."
 
 
 def load_rankings(path: str | Path) -> dict:
@@ -38,6 +37,26 @@ def load_rankings(path: str | Path) -> dict:
     return rankings
 
 
+def normalize_text(text: str) -> str:
+    return " ".join(str(text).lower().strip().split())
+
+
+def chunk_contains_answer(chunk: str, answers: list[str]) -> bool:
+    """
+    Simple exact-string check.
+
+    If the gold short answer appears inside a chunk, we treat that chunk as answer-supporting.
+    """
+    chunk_norm = normalize_text(chunk)
+
+    for ans in answers:
+        ans_norm = normalize_text(ans)
+        if ans_norm and ans_norm in chunk_norm:
+            return True
+
+    return False
+
+
 def format_chunks(candidate_chunks: list, indices: list, k: int = 3) -> str:
     top_indices = indices[:k]
 
@@ -46,6 +65,9 @@ def format_chunks(candidate_chunks: list, indices: list, k: int = 3) -> str:
             f"indices contains out-of-range values for candidate_chunks. "
             f"Length: {len(candidate_chunks)}\nRanking: {top_indices}"
         )
+
+    if len(top_indices) == 0:
+        return "No retrieved passage contains enough information to answer the question."
 
     return "\n\n".join(
         f"[Passage {i + 1} | chunk_index={idx}]\n{candidate_chunks[idx]}"
@@ -58,7 +80,8 @@ def build_rag_user_message(query: str, chunks_text: str) -> str:
         "Use the following retrieved information to answer the question.\n\n"
         f"Retrieved information:\n{chunks_text}\n\n"
         f"Question:\n{query}\n\n"
-        "Answer with the shortest correct answer supported by the retrieved information."
+        "Answer with the shortest correct answer supported by the retrieved information. "
+        "If the retrieved information does not contain the answer, say you don't know."
     )
 
 
@@ -85,9 +108,15 @@ def build_one_training_example(
     rankings: dict | None = None,
     k: int = 3,
     rng: random.Random | None = None,
+    corrupt_answer: bool = False,
+    unknown_answer: str = UNKNOWN_ANSWER,
 ) -> dict:
     """
     Build one formatted training example from one dataset row.
+
+    If corrupt_answer=True:
+        1. Remove chunks that contain the gold answer when possible.
+        2. Replace the assistant answer with an unknown-answer target.
 
     Returns metadata too, useful for debugging.
     """
@@ -95,7 +124,8 @@ def build_one_training_example(
         rng = random.Random(42)
 
     query = row["query"]
-    answer = row["short_answer"][0]
+    gold_answers = row["short_answer"]
+    gold_answer = gold_answers[0]
     chunks = row["candidate_chunks"]
     query_id = str(row["query_id"])
 
@@ -107,7 +137,22 @@ def build_one_training_example(
         rng.shuffle(full_ranking)
         ranking_source = "random_fallback"
 
-    rag_context = format_chunks(chunks, full_ranking, k=k)
+    original_top_k_indices = full_ranking[:k]
+
+    if corrupt_answer:
+        context_ranking = full_ranking[-k:]
+        answer = unknown_answer
+        corruption_status = "corrupted"
+        corruption_note = "Used the last k ranked chunks instead of the top k chunks."
+    else:
+        context_ranking = full_ranking[:k]
+        answer = gold_answer
+        corruption_status = "clean"
+        corruption_note = "Used the top k ranked chunks."
+
+    rag_context = format_chunks(chunks, context_ranking, k=len(context_ranking))
+    final_top_k_indices = context_ranking[:k]
+
     full_messages = build_chat_messages(query, rag_context, answer)
 
     full_text = tokenizer.apply_chat_template(
@@ -120,10 +165,14 @@ def build_one_training_example(
         "text": full_text,
         "query_id": query_id,
         "query": query,
+        "gold_answer": gold_answer,
         "answer": answer,
         "ranking_source": ranking_source,
-        "top_k_indices": full_ranking[:k],
+        "original_top_k_indices": original_top_k_indices,
+        "top_k_indices": final_top_k_indices,
         "num_candidate_chunks": len(chunks),
+        "corruption_status": corruption_status,
+        "corruption_note": corruption_note,
     }
 
 
@@ -133,14 +182,21 @@ def prepare_training_data(
     rankings: dict | None = None,
     k: int = 3,
     seed: int = 42,
+    corrupt_answers: bool = False,
+    corrupt_ratio: float = 0.15,
+    unknown_answer: str = UNKNOWN_ANSWER,
 ) -> list:
     """
     Convert a HuggingFace dataset split into formatted ChatML strings for SFTTrainer.
 
-    Each example contains:
+    Normal examples:
         system message: general assistant instruction
-        user message: retrieved chunks + question
+        user message: top-k retrieved chunks + question
         assistant message: gold answer
+
+    Corrupted examples:
+        user message: last-k ranked chunks + question
+        assistant message: "I don't know based on the retrieved information."
 
     Returns:
         list[dict]: each item has {"text": full_chatml_training_text}
@@ -150,14 +206,39 @@ def prepare_training_data(
 
     used_rankings = 0
     missing_rankings = 0
+    corrupted_count = 0
 
-    for row in dataset:
+    dataset_len = len(dataset)
+
+    if corrupt_answers:
+        if not 0.0 <= corrupt_ratio <= 1.0:
+            raise ValueError(
+                f"corrupt_ratio must be between 0 and 1. Got {corrupt_ratio}"
+            )
+
+        n_corrupt = int(dataset_len * corrupt_ratio)
+
+        # If corruption is enabled and dataset is not empty, corrupt at least one example.
+        if dataset_len > 0 and n_corrupt == 0:
+            n_corrupt = 1
+
+        n_corrupt = min(n_corrupt, dataset_len)
+        corrupt_indices = set(rng.sample(range(dataset_len), n_corrupt))
+    else:
+        n_corrupt = 0
+        corrupt_indices = set()
+
+    for row_idx, row in enumerate(dataset):
+        should_corrupt = row_idx in corrupt_indices
+
         example = build_one_training_example(
             row=row,
             tokenizer=tokenizer,
             rankings=rankings,
             k=k,
             rng=rng,
+            corrupt_answer=should_corrupt,
+            unknown_answer=unknown_answer,
         )
 
         if example["ranking_source"] == "rankings_file":
@@ -165,10 +246,16 @@ def prepare_training_data(
         else:
             missing_rankings += 1
 
+        if should_corrupt:
+            corrupted_count += 1
+
         formatted.append({"text": example["text"]})
 
     print(f"Used rankings: {used_rankings}")
     print(f"Missing rankings / random fallback: {missing_rankings}")
+    print(f"Corrupt mode: {corrupt_answers}")
+    print(f"Corrupt ratio: {corrupt_ratio}")
+    print(f"Corrupted answers: {corrupted_count} / {dataset_len}")
 
     rng.shuffle(formatted)
     return formatted
@@ -218,7 +305,33 @@ def main() -> None:
         "--seed",
         type=int,
         default=42,
-        help="Random seed for fallback rankings.",
+        help="Random seed for fallback rankings and corruption selection.",
+    )
+
+    parser.add_argument(
+        "--corrupt_answers",
+        action="store_true",
+        help="If passed, corrupt selected training examples.",
+    )
+
+    parser.add_argument(
+        "--num_corrupt_answers",
+        type=int,
+        default=10,
+        help="Number of examples to corrupt when --corrupt_answers is passed.",
+    )
+
+    parser.add_argument(
+        "--corrupt_this_sample",
+        action="store_true",
+        help="Force corruption on the inspected sample.",
+    )
+
+    parser.add_argument(
+        "--unknown_answer",
+        type=str,
+        default=UNKNOWN_ANSWER,
+        help="Replacement answer used for corrupted examples.",
     )
 
     args = parser.parse_args()
@@ -230,11 +343,13 @@ def main() -> None:
     )
 
     if args.split not in ds:
-        raise ValueError(f"Split '{args.split}' not found. Available splits: {list(ds.keys())}")
+        raise ValueError(
+            f"Split '{args.split}' not found. Available splits: {list(ds.keys())}"
+        )
 
     dataset = ds[args.split]
 
-    print(f"Loading tokenizer...")
+    print("Loading tokenizer...")
     tokenizer = load_tokenizer()
 
     rankings = None
@@ -257,12 +372,25 @@ def main() -> None:
     rng = random.Random(args.seed)
     row = dataset[args.sample_idx]
 
+    should_corrupt_sample = args.corrupt_this_sample
+
+    if args.corrupt_answers and not args.corrupt_this_sample:
+        n_corrupt = min(args.num_corrupt_answers, len(dataset))
+        corrupt_indices = set(rng.sample(range(len(dataset)), n_corrupt))
+        should_corrupt_sample = args.sample_idx in corrupt_indices
+
+        print(f"\nCorruption mode enabled.")
+        print(f"Number of corrupted examples: {n_corrupt}")
+        print(f"Is inspected sample corrupted? {should_corrupt_sample}")
+
     example = build_one_training_example(
         row=row,
         tokenizer=tokenizer,
         rankings=rankings,
         k=args.k,
         rng=rng,
+        corrupt_answer=should_corrupt_sample,
+        unknown_answer=args.unknown_answer,
     )
 
     print("\n" + "=" * 100)
@@ -272,7 +400,10 @@ def main() -> None:
     print(f"sample_idx: {args.sample_idx}")
     print(f"query_id: {example['query_id']}")
     print(f"ranking_source: {example['ranking_source']}")
-    print(f"top_k_indices: {example['top_k_indices']}")
+    print(f"corruption_status: {example['corruption_status']}")
+    print(f"corruption_note: {example['corruption_note']}")
+    print(f"original_top_k_indices: {example['original_top_k_indices']}")
+    print(f"final_top_k_indices: {example['top_k_indices']}")
     print(f"num_candidate_chunks: {example['num_candidate_chunks']}")
 
     print("\n" + "=" * 100)
@@ -282,6 +413,11 @@ def main() -> None:
 
     print("\n" + "=" * 100)
     print("GOLD ANSWER")
+    print("=" * 100)
+    print(example["gold_answer"])
+
+    print("\n" + "=" * 100)
+    print("TRAINING ANSWER")
     print("=" * 100)
     print(example["answer"])
 

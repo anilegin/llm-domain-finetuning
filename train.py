@@ -27,6 +27,8 @@ def train(
     hf_token: str | None = None,
     k: int = 3,
     seed: int = 42,
+    corrupt: bool = False,
+    corrupt_ratio: float = 0.15,
 ) -> str:
     """Run the full LoRA / QLoRA fine-tuning pipeline."""
 
@@ -64,8 +66,12 @@ def train(
         rankings=rankings,
         k=k,
         seed=seed,
+        corrupt_answers=corrupt,
+        corrupt_ratio=corrupt_ratio,
     )
     print(f"Created {len(train_data)} training examples")
+    print(f"Corrupt mode is set to {corrupt}")
+    print(f"Corrupt ratio is set to {corrupt_ratio}")
 
     train_dataset = HFDataset.from_list(train_data)
 

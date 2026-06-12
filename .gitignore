@@ -10,3 +10,8 @@ anilegin/
 .anilegin/
 .env
 #outputs/
+additional_tests.py
+export_submission.py
+outputs/additional_tests/*
+scripts/temp_dlt.sh
+scripts/run_additional_tests.sh
