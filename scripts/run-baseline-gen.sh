@@ -89,8 +89,18 @@ python compare_models.py \
     --batch_size 16 \
     --judge_batch_size 16 \
     --max_new_tokens 256 \
-    --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4/checkpoint-1500 \
+    --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4-corrupt/checkpoint-1500 \
     --rankings_path training_data/test_rankings.jsonl
+
+  # python compare_models.py \
+  #   --split test \
+  #   --num_samples 300 \
+  #   --k 3 \
+  #   --batch_size 16 \
+  #   --judge_batch_size 16 \
+  #   --max_new_tokens 256 \
+  #   --adapter_path models/qwen-rag-lora-k3-seq4096-lr1e4/checkpoint-1500 \
+  #   --rankings_path training_data/test_rankings.jsonl
 
   # python compare_models.py \
   #   --split test \
